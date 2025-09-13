@@ -1,6 +1,7 @@
 package com.maxkapral.annotations.processors;
 
 import com.maxkapral.annotations.Unionize;
+import com.maxkapral.union.UnionMatchResult;
 import com.palantir.javapoet.ClassName;
 import com.palantir.javapoet.JavaFile;
 import com.palantir.javapoet.MethodSpec;
@@ -35,8 +36,11 @@ import javax.tools.Diagnostic;
 @SupportedAnnotationTypes({"com.maxkapral.annotations.Unionize"})
 public final
 class UnionizeProcessor extends AbstractProcessor {
+    private static final ClassName MATCH_RESULT = ClassName.get(UnionMatchResult.class);
     private static final TypeVariableName T = TypeVariableName.get("T");
+    private static final TypeName MATCH_RESULT_T = ParameterizedTypeName.get(ClassName.get(UnionMatchResult.class), T);
     private static final TypeVariableName U = TypeVariableName.get("U");
+    private static final TypeName MATCH_RESULT_U = ParameterizedTypeName.get(ClassName.get(UnionMatchResult.class), U);
 
     @Override
     public
@@ -85,14 +89,14 @@ class UnionizeProcessor extends AbstractProcessor {
             var getterBuilder = MethodSpec.methodBuilder("match")
                                           .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT)
                                           .addTypeVariable(T)
-                                          .addStatement("$T t", T)
+                                          .addStatement("$T t", MATCH_RESULT_T)
                                           .returns(T);
 
             var applierBuilder = MethodSpec.methodBuilder("match")
                                            .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT)
                                            .addTypeVariable(T)
                                            .addTypeVariable(U)
-                                           .addStatement("$T u", U)
+                                           .addStatement("$T u", MATCH_RESULT_U)
                                            .returns(U);
 
             for (int i = 0; i < union.names().size(); ++i) {
@@ -105,7 +109,7 @@ class UnionizeProcessor extends AbstractProcessor {
                 MethodSpec ctor = MethodSpec.constructorBuilder()
                                             .addParameter(param)
                                             .build();
-                TypeSpec record = TypeSpec.recordBuilder(name)
+                TypeSpec record = TypeSpec.recordBuilder("%s$%s".formatted(interfaceName, name))
                                           .recordConstructor(ctor)
                                           .addSuperinterface(interfaceType)
                                           .build();
@@ -142,17 +146,17 @@ class UnionizeProcessor extends AbstractProcessor {
                                               .addTypeVariable(T)
                                               .addParameter(function, "function")
                                               .beginControlFlow("if (this instanceof $T inst0)", recordType)
-                                              .addStatement("return function.apply(inst0.$N())", value)
+                                              .addStatement("return $T.of(function.apply(inst0.$N()))", MATCH_RESULT, value)
                                               .endControlFlow()
-                                              .addStatement("return null")
-                                              .returns(T)
+                                              .addStatement("return $T.empty()", MATCH_RESULT)
+                                              .returns(MATCH_RESULT_T)
                                               .build();
                 ifaceBuilder.addMethod(getter);
 
                 getterBuilder.addParameter(function, "function" + i)
                              .addStatement("t = $N($N)", getter.name(), "function" + i)
-                             .beginControlFlow("if (t != null)")
-                             .addStatement("return t")
+                             .beginControlFlow("if (t.isPresent())")
+                             .addStatement("return t.get()")
                              .endControlFlow();
 
                 TypeName bifunction = ParameterizedTypeName.get(ClassName.get(BiFunction.class), clazzType, T, U);
@@ -163,28 +167,28 @@ class UnionizeProcessor extends AbstractProcessor {
                                                .addParameter(bifunction, "bifunction")
                                                .addParameter(T, "t")
                                                .beginControlFlow("if (this instanceof $T inst0)", recordType)
-                                               .addStatement("return bifunction.apply(inst0.$N(), t)", value)
+                                               .addStatement("return $T.of(bifunction.apply(inst0.$N(), t))", MATCH_RESULT, value)
                                                .endControlFlow()
-                                               .addStatement("return null")
-                                               .returns(U)
+                                               .addStatement("return $T.empty()", MATCH_RESULT)
+                                               .returns(MATCH_RESULT_U)
                                                .build();
                 ifaceBuilder.addMethod(applier);
 
                 applierBuilder.addParameter(bifunction, "bifunction" + i)
                               .addStatement("u = $N($N, t)", applier.name(), "bifunction" + i)
-                              .beginControlFlow("if (u != null)")
-                              .addStatement("return u")
+                              .beginControlFlow("if (u.isPresent())")
+                              .addStatement("return u.get()")
                               .endControlFlow();
             }
 
             setterBuilder.addParameter(T, "t");
             ifaceBuilder.addMethod(setterBuilder.build());
 
-            getterBuilder.addStatement("return null");
+            getterBuilder.addStatement("throw new $T($S)", ClassName.get(IllegalStateException.class), "unreachable");
             ifaceBuilder.addMethod(getterBuilder.build());
 
             applierBuilder.addParameter(T, "t");
-            applierBuilder.addStatement("return null");
+            applierBuilder.addStatement("throw new $T($S)", ClassName.get(IllegalStateException.class), "unreachable");
             ifaceBuilder.addMethod(applierBuilder.build());
 
             ifaceBuilder.addPermittedSubclasses(recordWrappers.stream()
