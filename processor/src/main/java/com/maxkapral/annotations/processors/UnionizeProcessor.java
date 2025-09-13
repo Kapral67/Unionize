@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Filer;
@@ -28,12 +29,14 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.MirroredTypesException;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 
 @SupportedAnnotationTypes({"com.maxkapral.annotations.Unionize"})
 public final
 class UnionizeProcessor extends AbstractProcessor {
     private static final TypeVariableName T = TypeVariableName.get("T");
+    private static final TypeVariableName U = TypeVariableName.get("U");
 
     @Override
     public
@@ -47,7 +50,7 @@ class UnionizeProcessor extends AbstractProcessor {
         for (Element element : roundEnv.getElementsAnnotatedWith(Unionize.class)) {
             validateElement(element);
             var unionize = element.getAnnotation(Unionize.class);
-            var union = new Union(getUnionizeTypes(unionize), Arrays.asList(unionize.names()));
+            var union = new Union(getUnionizeTypes(unionize), Arrays.asList(unionize.names()), unionize.value());
             validateUnionize(union, element);
             try {
                 generateSource(union, element);
@@ -67,9 +70,10 @@ class UnionizeProcessor extends AbstractProcessor {
         List<TypeSpec> recordWrappers = new ArrayList<>();
         final TypeSpec iface;
         {
+            String value = union.value();
             var ifaceBuilder = TypeSpec.interfaceBuilder(interfaceName)
                                        .addModifiers(Modifier.PUBLIC, Modifier.SEALED)
-                                       .addMethod(MethodSpec.methodBuilder("value")
+                                       .addMethod(MethodSpec.methodBuilder(value)
                                                             .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
                                                             .returns(Object.class)
                                                             .build());
@@ -84,12 +88,19 @@ class UnionizeProcessor extends AbstractProcessor {
                                           .addStatement("$T t", T)
                                           .returns(T);
 
+            var applierBuilder = MethodSpec.methodBuilder("match")
+                                           .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT)
+                                           .addTypeVariable(T)
+                                           .addTypeVariable(U)
+                                           .addStatement("$T u", U)
+                                           .returns(U);
+
             for (int i = 0; i < union.names().size(); ++i) {
                 String name = union.names().get(i);
                 TypeMirror clazz = union.types().get(i);
                 TypeName clazzType = ClassName.get(clazz);
 
-                ParameterSpec param = ParameterSpec.builder(clazzType, "value")
+                ParameterSpec param = ParameterSpec.builder(clazzType, value)
                                                    .build();
                 MethodSpec ctor = MethodSpec.constructorBuilder()
                                             .addParameter(param)
@@ -117,7 +128,7 @@ class UnionizeProcessor extends AbstractProcessor {
                                               .addParameter(biconsumer, "biconsumer")
                                               .addParameter(T, "t")
                                               .beginControlFlow("if (this instanceof $T inst0)", recordType)
-                                              .addStatement("biconsumer.accept(inst0.value(), t)")
+                                              .addStatement("biconsumer.accept(inst0.$N(), t)", value)
                                               .endControlFlow()
                                               .build();
                 ifaceBuilder.addMethod(setter);
@@ -131,7 +142,7 @@ class UnionizeProcessor extends AbstractProcessor {
                                               .addTypeVariable(T)
                                               .addParameter(function, "function")
                                               .beginControlFlow("if (this instanceof $T inst0)", recordType)
-                                              .addStatement("return function.apply(inst0.value())")
+                                              .addStatement("return function.apply(inst0.$N())", value)
                                               .endControlFlow()
                                               .addStatement("return null")
                                               .returns(T)
@@ -143,6 +154,27 @@ class UnionizeProcessor extends AbstractProcessor {
                              .beginControlFlow("if (t != null)")
                              .addStatement("return t")
                              .endControlFlow();
+
+                TypeName bifunction = ParameterizedTypeName.get(ClassName.get(BiFunction.class), clazzType, T, U);
+                MethodSpec applier = MethodSpec.methodBuilder(name + "Match")
+                                               .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT)
+                                               .addTypeVariable(T)
+                                               .addTypeVariable(U)
+                                               .addParameter(bifunction, "bifunction")
+                                               .addParameter(T, "t")
+                                               .beginControlFlow("if (this instanceof $T inst0)", recordType)
+                                               .addStatement("return bifunction.apply(inst0.$N(), t)", value)
+                                               .endControlFlow()
+                                               .addStatement("return null")
+                                               .returns(U)
+                                               .build();
+                ifaceBuilder.addMethod(applier);
+
+                applierBuilder.addParameter(bifunction, "bifunction" + i)
+                              .addStatement("u = $N($N, t)", applier.name(), "bifunction" + i)
+                              .beginControlFlow("if (u != null)")
+                              .addStatement("return u")
+                              .endControlFlow();
             }
 
             setterBuilder.addParameter(T, "t");
@@ -150,6 +182,10 @@ class UnionizeProcessor extends AbstractProcessor {
 
             getterBuilder.addStatement("return null");
             ifaceBuilder.addMethod(getterBuilder.build());
+
+            applierBuilder.addParameter(T, "t");
+            applierBuilder.addStatement("return null");
+            ifaceBuilder.addMethod(applierBuilder.build());
 
             ifaceBuilder.addPermittedSubclasses(recordWrappers.stream()
                                                               .map(TypeSpec::name)
@@ -198,7 +234,13 @@ class UnionizeProcessor extends AbstractProcessor {
             this.error("@Unionize types and names must have the same length", element);
         }
 
-        if (union.types().stream().distinct().count() != union.types().size()) {
+        final var utils = this.processingEnv.getTypeUtils();
+        final long distinctTypes = union.types()
+                                        .stream()
+                                        .map(t -> new Type<>(t, utils))
+                                        .distinct()
+                                        .count();
+        if (distinctTypes != union.types().size()) {
             this.error("@Unionize types must be distinct", element);
         }
 
@@ -217,6 +259,10 @@ class UnionizeProcessor extends AbstractProcessor {
                 this.error("@Unionize contains primitive type: " + type, element);
             }
         }
+
+        if (!SourceVersion.isIdentifier(union.value()) || SourceVersion.isKeyword(union.value())) {
+            this.error("@Unionize value is invalid: " + union.value(), element);
+        }
     }
 
     private List<? extends TypeMirror> getUnionizeTypes(Unionize unionize) {
@@ -232,5 +278,22 @@ class UnionizeProcessor extends AbstractProcessor {
         this.processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, message, element);
     }
 
-    private record Union(List<? extends TypeMirror> types, List<String> names) {}
+    private record Type<T extends TypeMirror>(T mirror, Types utils) {
+        @Override
+        public
+        int hashCode () {
+            return mirror.toString().hashCode();
+        }
+
+        @Override
+        public
+        boolean equals (Object o) {
+            if (o instanceof Type<?> t) {
+                return utils.isSameType(mirror, t.mirror());
+            }
+            return false;
+        }
+    }
+
+    private record Union(List<? extends TypeMirror> types, List<String> names, String value) {}
 }

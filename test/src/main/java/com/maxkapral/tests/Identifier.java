@@ -11,6 +11,6 @@ import java.util.UUID;
     "uuid",
     "str",
     "num"
-})
+}, value = "id")
 interface Identifier {
 }

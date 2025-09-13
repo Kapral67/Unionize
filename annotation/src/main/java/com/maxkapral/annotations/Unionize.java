@@ -11,4 +11,5 @@ public
 @interface Unionize {
     Class<?>[] types();
     String[] names();
+    String value() default "value";
 }
