@@ -1,4 +1,0 @@
-dependencies {
-    implementation project(':annotation')
-    implementation 'com.palantir.javapoet:javapoet:0.7.0'
-}

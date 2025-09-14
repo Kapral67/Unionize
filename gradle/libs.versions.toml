@@ -1,0 +1,5 @@
+[libraries]
+java-poet = { module = "com.palantir.javapoet:javapoet", version = "0.7.0" }
+
+[plugins]
+jreleaser = "org.jreleaser:1.20.0"

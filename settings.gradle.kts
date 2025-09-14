@@ -1,0 +1,3 @@
+rootProject.name = "Unionize"
+
+include("annotation", "processor", "test")

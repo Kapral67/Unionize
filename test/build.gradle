@@ -1,4 +1,14 @@
+plugins {
+    id 'java'
+}
+
 dependencies {
     implementation project(':annotation')
     annotationProcessor project(':processor')
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
 }

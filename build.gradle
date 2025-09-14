@@ -1,9 +1,0 @@
-subprojects {
-    apply plugin: 'java'
-    group = 'com.maxkapral.annotations'
-    version = '0.1.0'
-
-    repositories {
-        mavenCentral()
-    }
-}
